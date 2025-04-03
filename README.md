@@ -1,4 +1,4 @@
-# Masterthesis_BA_Portugal
+# The role of protected areas on Burned Area in Portuguese forests
 This repository contains scripts and data for a Master's Thesis analyzing burned areas (BAs) in protected vs. unprotected regions in Portugal.
 
 ## **Overview**
