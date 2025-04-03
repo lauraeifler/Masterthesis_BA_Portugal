@@ -47,8 +47,8 @@ Data table:
 
 ## **Requirements**
 Ensure you have the following installed:
-- Python (version X)
-- R (version Y)
+- Python
+- R (version 4.2)
 - Packages are listed in each script
 
 
