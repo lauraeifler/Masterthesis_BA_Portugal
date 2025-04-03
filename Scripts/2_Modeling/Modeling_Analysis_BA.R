@@ -4,39 +4,39 @@ rm(list=ls())
 # load packages
 library(raster)
 library(caret)
-library(sf)
-#library(mapview)
 library(dplyr)
-library(CAST)
 library(randomForest)
-library(lme4)
 library(performance)
-library(ggspatial) 
-library(ggplot2)
 library(quantreg)
 library(mgcv)
 library(cluster)
+library(permimp)
+library(spdep)
+
+library(sf)
 library(rnaturalearth)
 library(rnaturalearthdata)
-library(permimp)
-library(vegan)
-library(ineq)
 
-setwd("~/Masterthesis/Data")
-path_fig <- "~/Masterthesis/Figures/"
-################################################################################
-data <- read.csv('Data_BA_forest.csv')
+library(ggspatial) 
+library(ggplot2)
+library(viridis)
+library(RColorBrewer)
 
+# set paths/ working directory
+setwd("your-data-path")
+path_fig <- "output-path-figures"
+
+############################### BALANCE ####################################
+## read data table of BA events
+data <- read.csv('filename')
+
+# overview of number of events
 table(data['lccs'])
 table(data['PA_status'])
 
 # Create the interaction table
 interaction_table <- table(data$lccs, data$PA_status)
 
-# Print the table
-print(interaction_table)
-
-##### BALANCE #####
 # Calculate the minimum number of samples
 min_samples <- min(interaction_table)
 print(min_samples)
@@ -53,11 +53,13 @@ table(balanced_data$lccs, balanced_data$PA_status)
 
 write.csv(balanced_data, 'Data_BA_forest_balanced.csv')
 
-################################################################################
+################################ PREPARATION ######################################
+########### Data prep ###########
+## read balanced data
 data <- read.csv('Data_BA_forest_balanced.csv')
 
 
-## clean, because first three columns some indexes
+## clean, because first three columns are some indices
 data <- data %>%
   select(-(1:3)) %>%
   mutate(PA_status = as.factor(PA_status),
@@ -72,29 +74,28 @@ data$Longitude_norm <- (data$Longitude - mean(data$Longitude, na.rm = TRUE)) /
 
 
 
-## PA shape 
+## add PA shape from rnaturalearth
 portugal_sf <- ne_countries(scale = "medium", country = "Portugal", returnclass = "sf")
-# Define a bounding box for mainland Portugal (approximate)
+# Bounding box for mainland Portugal
 mainland_bbox <- st_bbox(c(xmin = -10, xmax = -6, ymin = 36.8, ymax = 42), crs = st_crs(portugal_sf))
 
-# Crop Portugal to the bounding box (removes islands)
+# Crop Portugal to the bounding box (remove islands)
 pt_sf <- st_crop(portugal_sf, mainland_bbox)
 
 
 
-## CLUSTER
-## create sf dataset for later accounting for spatial autocorrelation
+########### Cluster ###########
 set.seed(84)  # For reproducibility
-clusters <- kmeans(data[,  c("Longitude", "Latitude")], centers =10)$cluster  # Adjust centers as needed
+## 10 cluster based in Lat and Lon
+clusters <- kmeans(data[,  c("Longitude", "Latitude")], centers =10)$cluster  
 
-# Add clusters to the dataset
+# Add clusters to the data
 data$cluster <- as.factor(clusters)
 
 
-##### CV #####
-##### Random folds, balanced
+### Comparison of folds when based on clusters/ random ###
+## Random folds, balanced based on PA status
 set.seed(42)
-# data$fold <- sample(1:10, size = nrow(data), replace = TRUE)
 randomfold <- createFolds(data$PA_status, k = 10, list = TRUE, returnTrain = FALSE)
 data$randomfold <- NA
 
@@ -104,9 +105,9 @@ for (i in seq_along(randomfold)) {
 }
 
 
-## balanced folds based on PA status AND LC
+## Random folds, balanced based on PA status AND LCC
 set.seed(42)
-# Create a new factor combining PA_status and lccs
+# Create a new factor combining PA status and LCC
 data$PA_lccs <- interaction(data$PA_status, data$lccs, drop = TRUE)
 
 randomfold_b <- createFolds(data$PA_lccs, k = 10, list = TRUE, returnTrain = FALSE)
@@ -122,8 +123,8 @@ table(data$randomfold, data$PA_status)
 table(data$randomfold_b, data$PA_status)
 
 
-#### CLUSTERFOLDS 
-## balances clusterfold
+## Clusterfolds
+# balances clusterfold, based on PA status
 data$clusterfold <- NA
 
 for (fold in unique(data$cluster)) {
@@ -144,7 +145,7 @@ for (fold in unique(data$cluster)) {
 }
 
 
-###### balanced for PA AND LC
+## Clusterfoldd balanced based in PA AND LCC
 data$clusterfold_b <- NA
 
 for (fold in unique(data$cluster)) {
@@ -152,13 +153,9 @@ for (fold in unique(data$cluster)) {
   fold_data <- data[fold_indices, ]  # Subset fold data
   
   ## balanced PA and LC
-  # Create combined factor for stratification (PA_status + lccs)
-  # fold_data$PA_lccs <- interaction(fold_data$PA_status, fold_data$lccs, drop = TRUE)
-  # Find the minimum count of any PA_status + lccs combination
   min_count <- min(table(fold_data$PA_lccs))
   
   # Downsample both classes to match the smaller count
-  # if balanced PA and LC change teh data$PA_lccs
   balanced_indices <- unlist(lapply(split(fold_indices, data$PA_lccs[fold_indices]), function(idx) {
     sample(idx, min_count)
   }))
@@ -168,78 +165,42 @@ for (fold in unique(data$cluster)) {
 }
 
 
-# Convert to factor and remove NA (only keep balanced rows)
-# dataTrain <- dataTrain[!is.na(dataTrain$clusterfold_balanced), ]
-data$clusterfold_b <- as.factor(data$clusterfold_b)
-
-###### tables 
+## Comparison tables 
 # Check balance per fold
 table(data$clusterfold_b, data$PA_status)
 
 # Check the distribution of folds
-table(data$clusterfold) #, data$PA_status)
-table(data$clusterfold_b) # , data$lccs
+table(data$clusterfold, data$PA_status)
+table(data$clusterfold_b, data$lccs)
 
 table(data$fold, data$lccs)
 table(data$fold_balance, data$lccs)
 
 
-#### test homogeneity per folds
 
-class_counts <- table(data$fold, data$PA_status)
-
-# Calculate homogeneity per fold
-homogeneity_metrics <- apply(class_counts, 1, function(x) {
-  mean_x <- mean(x)       # Mean of the counts per fold
-  sd_x <- sd(x)           # Standard deviation
-  min_max_ratio <- min(x) / max(x)  # Min/Max ratio
-  
-  homogeneity_score <- 1 - (sd_x / mean_x)  # Higher means more homogeneous
-  
-  return(c(Homogeneity = homogeneity_score, MinMaxRatio = min_max_ratio))
-})
-
-# Convert to data frame for readability
-homogeneity_df <- as.data.frame(t(homogeneity_metrics))
-homogeneity_df$Fold <- rownames(homogeneity_df)
-homogeneity_df
-
-mean(homogeneity_df$Homogeneity)
-
-
-#############
-## separate to training and test data
+########### Training | Test ###########
+## separate into training and test data
 set.seed(84)
-trainingids <- createDataPartition(data$PA_lccs, list=FALSE, p=0.8) # (80% training data can also be incraesed)
+trainingids <- createDataPartition(data$PA_lccs, list=FALSE, p=0.8) # 80% training data
 dataTrain <- data[trainingids,]
 dataTest <- data[-trainingids,]
 
-table(dataTrain$PA_status)
 
-# Check the distribution of folds
-table(dataTest$clusterfold) #, dataTrain$lccs)
-table(dataTrain$clusterfold_b) #, dataTrain$lccs)
-
-table(dataTrain$randomfold, dataTrain$lccs)
-table(dataTrain$randomfold_b, dataTrain$lccs)
-
-table(data$PA_lccs)
-
-###################
+########### Spatial data ###########
 ## data as spatial feature
 data_sf <- st_as_sf(data, coords = c("Longitude", "Latitude"), crs=4326)
 # data_sf
 data_sf$clusterfold <- factor(data_sf$clusterfold, levels = 1:10)
 data_sf$clusterfold_b <- factor(data_sf$clusterfold_b, levels = 1:10)
 
-#######################################
-library(spdep)
+
+########### Test Autocorrelation ###########
+
 ### testing for spatial autocorrelation in the data with Moran's I test
 
-# Assume data_sf is your spatial points data as an sf object
 # Create a spatial weights matrix (neighbors)
 coords <- st_coordinates(data_sf)
-nb <- knn2nb(knearneigh(coords, k = 10))  # Adjust k for neighbors, e.g., 4 nearest neighbors
+nb <- knn2nb(knearneigh(coords, k = 10))  # Adjust k for neighbors
 
 # Compute spatial weights matrix
 lw <- nb2listw(nb, style = "W")
@@ -248,7 +209,9 @@ lw <- nb2listw(nb, style = "W")
 moran_test <- moran.test(data_sf$Burned_Area, lw)
 print(moran_test)
 
-########################################
+
+########### Visualization Preparation ###########
+
 ## Visualize cluster
 clusters_sf <- data_sf %>% group_by(cluster)
 # For scale bar and north arrow
@@ -291,17 +254,17 @@ ggsave(filename = paste0(path_fig, "Map_PT_cluster_dist.png"), plot = last_plot(
        width = 5, height = 7, dpi = 300, limitsize = FALSE)
 
 
-## visualize random
+## Visualize folds/ samples in cluster
 #### coloring folds random sampling, no account for spatial autocorrelation
 fold_colors <- c("navy", "maroon", "yellowgreen", "purple", "orange", "yellow", "darkcyan", 
                  "deeppink", "grey", "darkgreen")
+
 ggplot() +
   geom_sf(data = pt_sf, fill = NA, color = "black", size = 0.8) +
   # Plot individual points
   geom_sf(data = data_sf, aes(color = as.factor(randomfold)), size = 1) +
   
   # Add map elements
-  #annotation_scale(location = "br") +
   annotation_north_arrow(location = "br", which_north = "true", style = north_arrow_fancy_orienteering) +
   
   scale_color_manual(values = fold_colors, name = "Group") +
@@ -323,7 +286,7 @@ ggsave(filename = paste0(path_fig, "Map_PT_random_sampling_dist.png"), plot = la
   width = 5, height = 8, dpi = 300)
   
 
-## cluster folds
+## Cluster folds PA balanced
 ggplot() +
   geom_sf(data = pt_sf, fill = NA, color = "black", size = 0.8) +
   
@@ -356,7 +319,7 @@ ggsave(filename = paste0(path_fig, "Map_PT_spatial_sampling_dist.png"), plot = l
        width = 5, height = 8, dpi = 300)
 
 
-#### balanced clusterfolds ####
+### Clusterfolds PA+LCC balanced
 ggplot() +
   geom_sf(data = pt_sf, fill = NA, color = "black", size = 0.8) +
   
@@ -387,28 +350,9 @@ ggsave(filename = paste0(path_fig, "Map_PT_spatial_balanced_sampling_dist.png"),
 
 
 
-### all data points
-forest_colors <- c("yellowgreen", "darkolivegreen4", "darkgreen")
-ggplot() +
-  geom_sf(data = pt_sf, fill = NA, color = "black", size = 0.8) +
-  # Plot individual points
-  geom_sf(data = data_sf, aes(color = as.factor(lccs)), size = 1) +
-  
-  # Add map elements
-  #annotation_scale(location = "br") +
-  annotation_north_arrow(location = "br", which_north = "true", style = north_arrow_fancy_orienteering) +
-  
-  scale_color_manual(values = forest_colors, name = "LC class") +
-  
-  theme_minimal() +
-  labs(x = "Longitude", y = "Latitude")
-
-table(dataTrain$lccs, dataTrain$PA_status)
-
-
-
-#### BA and PA histogram and Boxplot ####
-# Plot the stacked histogram
+### BA in PAs
+# PA histogram and boxplot
+# stacked histogram
 ggplot(dataTrain, aes(x = Burned_Area, fill = as.factor(PA_status))) +
   geom_histogram(binwidth = 5, position = "stack", color = "black") +
   scale_fill_manual(values = c("0" = "lightblue", "1" = "darkcyan"),
@@ -428,7 +372,7 @@ ggsave(filename = paste0(path_fig, "Histogram_BA_PA_traindata.png"), plot = last
        width = 8, height = 4, dpi = 300)
 
 
-
+# boxplot
 ggplot(dataTrain, aes(x = as.factor(PA_status), y = Burned_Area, fill = as.factor(PA_status))) +
   geom_boxplot(width = 0.3) +  # Narrower boxes
   scale_fill_manual(
@@ -452,28 +396,25 @@ ggsave(filename = paste0(path_fig, "Boxplot_BA_PA_traindata.png"), plot = last_p
        width = 8, height = 4, dpi = 300)
 
 
-###############################################
 
-################################################################################
-## Quantile regression
+################################# MODELING #####################################
+
+########### Quantile Regression ###########
 
 
 # Define the models
 models <- list()
-# models[["M1"]] <- "Burned_Area ~ fwi_norm"
-# models[["M2"]] <- "Burned_Area ~ fwi_norm * PA_status"
-# models[["M3"]] <- "Burned_Area ~ fwi_norm * Latitude * Longitude"
-# models[["M4"]] <- "Burned_Area ~ fwi_norm + Latitude * PA_status"
-models[["M5"]] <- "Burned_Area ~ fwi_norm + PA_status * lccs"
-# models[["M6"]] <- "Burned_Area ~ PA_status"
-# models[["M7"]] <- "Burned_Area ~ PA_status * lccs"
-# models[["M8"]] <- "Burned_Area ~ PA_status + Latitude_norm + Longitude_norm"
+models[["M1"]] <- "Burned_Area ~ PA_status"
+# models[["M2"]] <- "Burned_Area ~ PA_status * lccs"
+# models[["M3"]] <- "Burned_Area ~ fwi_norm + PA_status * lccs"
+# models[["M4"]] <- "Burned_Area ~ PA_status + Latitude_norm + Longitude_norm"
 
 
-print(cor(dataTrain[, c("PA_status", "lccs")], use = "complete.obs"))
+# 10 fold CV, looping through clusterfolds, leaving one cluster out as test data
+# results saved in results list
+# quantile 0.25, 0.5 and 0.75
 
-#### FINAL approach
-set.seed(84)
+set.seed(84) # set seed for reproducibility
 results <- list()
 
 for (mod_name in names(models)) {
@@ -481,19 +422,14 @@ for (mod_name in names(models)) {
     
     coef_list <- list()  # Stores coefficients for each fold
     sd_list <- list()     # Stores coefficient SDs per fold
-    r2_train_list <- c()  # Stores training R² per fold
-    r2_test_list <- c()   # Stores test R² per fold
+    r2_train_list <- c()  # Stores training R2 per fold
+    r2_test_list <- c()   # Stores test R2per fold
     rmse_list <- c()      # Stores RMSE per fold
     
     for (fold in 1:10) {
-      # Split into train and test
+      # Split into train and test (CV)
       train_data <- dataTrain %>% filter(!is.na(clusterfold) & clusterfold != fold)
       test_data <- dataTrain %>% filter(!is.na(clusterfold) & clusterfold == fold)
-      
-      # Skip fold if there are not enough data points
-      # if (nrow(train_data) < 2 | nrow(test_data) < 2) {
-        # next  
-      # }
       
       # Fit quantile regression model
       mod_formula <- as.formula(models[[mod_name]])
@@ -517,7 +453,7 @@ for (mod_name in names(models)) {
       }
       r2_train_list <- c(r2_train_list, r2_train)
       
-      # Predict on test data (for R² test & RMSE)
+      # Predict on test data (for R2 test & RMSE)
       predictions <- predict(model, newdata = test_data)
       valid_test_idx <- !is.na(predictions) & !is.na(test_data$Burned_Area)
       
@@ -555,6 +491,7 @@ for (mod_name in names(models)) {
   }
 }
 
+# print results for training and test
 for (quant in c(0.25, 0.5, 0.75)) {
   cat(sprintf("\n--- Results for Quantile: Q%2.0f ---\n", 100 * quant))
   
@@ -577,12 +514,8 @@ for (quant in c(0.25, 0.5, 0.75)) {
 
 
 
+########### Generalized Additive Model ###########
 
-
-################################################################################
-## GAM
-
-### FINAL APPROACH GAM
 # Initialize an empty list to store model results
 gam_results <- list()
 valid_folds <- unique(na.omit(dataTrain$clusterfold)) 
@@ -593,27 +526,27 @@ adj_r2_values <- c()
 rmse_list <- c()  
 r2_list <- c()
 
-set.seed(84)
-# Loop through the 5 folds
+set.seed(84) # set seedd for reproducibility
+# Loop through the 10 folds
 for (fold in valid_folds) {
   
   cat(sprintf("\n--- Fold %s ---\n", fold))
   
-  # Split the data: Use all data except the current fold for training
+  # Split the data (CV)
   train_data <- dataTrain %>% filter(!is.na(clusterfold) & clusterfold != fold)
   test_data <- dataTrain %>% filter(!is.na(clusterfold) & clusterfold == fold)
   
   # Fit the GAM model
+  # adjust predictors, as needed
   mod_gam <- gam(Burned_Area ~ s(Latitude_norm, bs = "cr") + s(Longitude_norm, bs = "cr") + 
-                   PA_status, data = train_data, method = "REML") #*lccs + fwi_norm
-  # mod_gam <- gam(Burned_Area ~ PA_status, data = train_data)
+                   PA_status*lccs + fwi_norm, data = train_data, method = "REML")
   
   # Store the model results
   gam_results[[paste0("Fold_", fold)]] <- mod_gam
   
   # Extract coefficients and adjusted R²
   coefficients_list[[paste0("Fold_", fold)]] <- coef(mod_gam)  # Store coefficients
-  # adj_r2_values <- c(adj_r2_values, summary(mod_gam)$r.sq)  # Store adjusted R²
+  # Store adjusted R2
   if (!is.na(summary(mod_gam)$r.sq)) {
     adj_r2_values <- c(adj_r2_values, summary(mod_gam)$r.sq)
   }
@@ -621,14 +554,13 @@ for (fold in valid_folds) {
   # Print summary for each fold
   print(summary(mod_gam))
   
-  
   # Make predictions on the test set
   predictions <- predict(mod_gam, newdata = test_data)
   
-  # Compute RMSE
+  # Compute RMSE (test)
   rmse_val <- sqrt(mean((test_data$Burned_Area - predictions)^2, na.rm = TRUE))
   
-  # Compute R²
+  # Compute R2 (test)
   ss_total <- sum((test_data$Burned_Area - mean(test_data$Burned_Area, na.rm = TRUE))^2, na.rm = TRUE)
   ss_residual <- sum((test_data$Burned_Area - predictions)^2, na.rm = TRUE)
   r2_val <- 1 - (ss_residual / ss_total)
@@ -645,28 +577,27 @@ for (fold in valid_folds) {
 }
 
 
-#### Coefficients of model
+## GAM: Coefficients of model (training)
 # Convert coefficients_list into a data frame for easier computation
 coefficients_df <- do.call(rbind, coefficients_list)  # Convert list to data frame
 
-# Compute mean and standard deviation for each coefficient
+# Compute mean and SD for each coefficient
 mean_coefficients <- colMeans(coefficients_df, na.rm = TRUE)
 sd_coefficients <- apply(coefficients_df, 2, sd, na.rm = TRUE)
 
-# Compute mean adjusted R²
+# Compute mean adjusted R2
 mean_adj_r2 <- mean(adj_r2_values, na.rm = TRUE)
 
 # Print the results
 cat("\n*** Summary of GAM Model Over All Folds ***\n")
 cat("\nMean Coefficients:\n")
 print(mean_coefficients)
-
 cat("\nStandard Deviation of Coefficients:\n")
 print(sd_coefficients)
-
 cat(sprintf("\nMean Adjusted R²: %.4f\n", mean_adj_r2))
 
-####### Prediction
+
+## GAM: Prediction
 # Compute mean RMSE and mean R² across folds
 mean_rmse <- mean(rmse_list, na.rm = TRUE)
 mean_r2 <- mean(r2_list, na.rm = TRUE)
@@ -677,110 +608,15 @@ cat(sprintf("Mean RMSE: %.3f\n", mean_rmse))
 cat(sprintf("Mean R²: %.3f\n", mean_r2))
 
 
-# Initialize an empty list to store coefficients
-coef_list <- list()
-
-# Loop through folds to extract coefficients
-for (fold in names(gam_results)) {
-  mod_gam <- gam_results[[fold]]  # Get the model
-  
-  # Extract parametric coefficients (not smooth terms)
-  coef_vals <- coef(mod_gam)
-  
-  # Convert to a data frame
-  df <- data.frame(
-    Variable = names(coef_vals),
-    Coefficient = coef_vals,
-    Fold = fold
-  )
-  
-  # Store in list
-  coef_list[[fold]] <- df
-}
-
-# Combine all folds into one data frame
-coef_df <- bind_rows(coef_list)
-
-# Filter out intercept and smooth terms if needed
-coef_df <- coef_df %>% filter(!grepl("s\\(", Variable))  # Remove smooth terms
-
-# Extract numeric part from Fold column (e.g., "Fold_3" -> 3)
-coef_df$Fold <- gsub("Fold_", "", coef_df$Fold)  # Remove "Fold_" part
-coef_df$Fold <- as.numeric(coef_df$Fold)  # Convert to numeric
-
-# Convert Fold to a factor with correct order (1 to 10)
-coef_df$Fold <- factor(coef_df$Fold, levels = 1:10)
-
-library(viridis)
-library(RColorBrewer)
-
-# Plot stacked histogram of coefficients
-ggplot(coef_df, aes(x = Variable, y = Coefficient, fill = Fold)) +
-  geom_bar(stat = "identity", position = "dodge") +  # Dodged bars per fold
-  # scale_fill_viridis_d(option = "cividis") +  # Apply magma color palette
-  scale_fill_manual(values = colorRampPalette(c("lightgoldenrod2", "deeppink4"))(10)) +
-  # scale_fill_brewer(palette = "Blues") +
-  scale_x_discrete(labels = c("(Intercept)" = "nPA : LC 1",  # Manually change fwi_norm to FWI
-                              "lccs2" = "LC 2",  # lccs1 to LCCS1
-                              "lccs3" = "LC 3",                              
-                              "PA_status1:lccs2" = "PA : LC 2", 
-                              "PA_status1:lccs3" = "PA : LC 3",
-                              "PA_status1" = "PA",
-                              "fwi_norm"="FWI")) +
-  labs(x = "Variable", 
-       y = "Coefficient Value",
-       fill = "Fold") +
-  theme_minimal()
-ggsave(filename = paste0(path_fig, "GAM_Coef_all.png"), plot = last_plot(),
-       width = 10, height = 6, dpi = 300)
 
 
-
-# Assuming coef_df contains the original data
-coef_mean_df <- coef_df %>%
-  group_by(Variable) %>%
-  summarise(Mean_Coefficient = mean(Coefficient, na.rm = TRUE))  # Calculate the mean coefficient per variable
-
-
-ggplot(coef_mean_df, aes(x = Variable, y = Mean_Coefficient, fill = Variable)) +
-  geom_bar(stat = "identity") +  # Plot bars with the mean coefficient value
-  scale_fill_manual(values = colorRampPalette(c("lightgoldenrod2", "deeppink4"))(10)) +  # Apply color palette
-  scale_x_discrete(labels = c("(Intercept)" = "nPA : LC 1",  # Manually change labels
-                              "lccs2" = "LC 2", 
-                              "lccs3" = "LC 3",                              
-                              "PA_status1:lccs2" = "PA : LC 2", 
-                              "PA_status1:lccs3" = "PA : LC 3",
-                              "PA_status1" = "PA",
-                              "fwi_norm" = "FWI")) +
-  labs(x = "Variable", 
-       y = "Mean Coefficient Value",
-       fill = "Variable") +
-  theme_minimal()+
-  theme(legend.position = "None")
-ggsave(filename = paste0(path_fig, "GAM_Coef_all_mean.png"), plot = last_plot(),
-       width = 8, height = 5, dpi = 300)
-
-################################################################################
-## SIMPLE Random Forest
+########### Random Forest ###########
 
 predictors <- c("lccs", "PA_status", "Latitude_norm", "Longitude_norm", "fwi_norm") #"Month", "Year", 
 response <- "Burned_Area"
 
 
-## split test and training so that they have the same number of LC classes, and that one 
-# class is not under-represented
-
-
-boxplot(dataTrain$Burned_Area ~ dataTrain$lccs, las=2)
-boxplot(dataTrain$Burned_Area ~ dataTrain$PA_status, las=2)
-boxplot(dataTrain$Burned_Area ~ dataTrain$Month, las=2)
-boxplot(dataTrain$Burned_Area ~ dataTrain$Year, las=2)
-
-
-data$interaction <- interaction(data$PA_status, data$lccs)
-
-
-############## TUNE RF MODEL ###############
+##### Tuning the RF
 
 ### optimal mtry value
 fit1 <- randomForest(Burned_Area ~ PA_status + lccs + fwi_norm + Latitude + Longitude, 
@@ -794,7 +630,7 @@ print(fit1)
 print(fit2)
 print(fit3)
 
-#### mtry = 2
+#### --> mtry = 2
 
 
 # Try different values of ntree (e.g., 100, 200, 500)
@@ -805,15 +641,15 @@ fit2 <- randomForest(Burned_Area ~ PA_status + lccs + fwi_norm + Latitude + Long
 fit3 <- randomForest(Burned_Area ~ PA_status + lccs + fwi_norm + Latitude + Longitude, 
                      data = dataTrain, ntree = 250)
 
-# Compare performance (e.g., OOB error rate) of different models
+# Compare performance 
 print(fit1)
 print(fit2)
 print(fit3)
 
-#### better performance with ntree = 200
+#### --> better performance with ntree = 200
 
 
-# Try different values of nodesize (e.g., 1, 5, 10)
+# Try different values of nodesize 
 fit1 <- randomForest(Burned_Area ~ PA_status + lccs + fwi_norm + Latitude + Longitude, 
                      data = dataTrain, nodesize = 1)
 fit2 <- randomForest(Burned_Area ~ PA_status + lccs + fwi_norm + Latitude + Longitude, 
@@ -821,14 +657,14 @@ fit2 <- randomForest(Burned_Area ~ PA_status + lccs + fwi_norm + Latitude + Long
 fit3 <- randomForest(Burned_Area ~ PA_status + lccs + fwi_norm + Latitude + Longitude, 
                      data = dataTrain, nodesize = 10)
 
-# Compare performance of different nodesize values
+# Compare performance 
 print(fit1)
 print(fit2)
 print(fit3)
 
-#### best wiith nodesize = 5
+#### --> best with nodesize = 5
 
-
+## check
 mRF <- randomForest(Burned_Area ~ PA_status + lccs + fwi_norm + Latitude + Longitude, 
                     data = dataTrain, nodesize = 5, ntree = 200, mtry=2)
 
@@ -836,14 +672,15 @@ plot(mRF)  # Plot OOB error for the final model
 
 
 
-#####################
-## RF per fold
+## RF with CV
+
 importance_list <- list()
+
 set.seed(84)
 # Loop over each fold
 for (fold in 1:10) {
   # Define train-test split for this fold
-  train_data <- dataTrain %>% filter(!is.na(clusterfold) & clusterfold != fold) ## fold random doesn't make sense
+  train_data <- dataTrain %>% filter(!is.na(clusterfold) & clusterfold != fold)
   test_data <- dataTrain %>% filter(!is.na(clusterfold) & clusterfold == fold)
   
   # Train Random Forest on the training set
@@ -864,8 +701,6 @@ for (fold in 1:10) {
 
 # Combine all fold importances into a single data frame
 all_importance <- do.call(rbind, importance_list)
-
-
 
 
 ### Plotting the importances
@@ -919,7 +754,10 @@ ggsave(filename = paste0(path_fig, "RF_VarImp_folds.png"), plot = last_plot(),
 
 
 
-########## MODEL COMMPARISON ##############
+
+############################# MODELING COMPARISON ##############################
+
+########### Commparison three models in CV ###########
 
 # Initialize an empty data frame to store performance results
 performance_results <- data.frame(Fold = integer(),
@@ -929,8 +767,7 @@ performance_results <- data.frame(Fold = integer(),
                                   stringsAsFactors = FALSE)
 
 
-# Loop over folds (1:10)
-#  + fwi_norm + Latitude + Longitude
+# all best models of QR, GAM and RF in 10-fold CV
 for (fold in 1:10) {
   
   # Subset train-test data
@@ -963,61 +800,19 @@ for (fold in 1:10) {
                                data.frame(Fold = fold, Model = "Random Forest", MSE = mse_RF, R2 = r2_RF))
 }
 
-
-######
-# Initialize a dataframe to store performance metrics
-performance_results <- data.frame(Model = character(),
-                                  MSE = numeric(),
-                                  R2 = numeric(),
-                                  stringsAsFactors = FALSE)
-
-# --- 1. Quantile Regression (QR) ---
-modelQR <- rq(Burned_Area ~ PA_status * lccs + fwi_norm, data = dataTrain, tau = 0.5)
-pred_QR <- predict(modelQR, dataTest)
-mse_QR <- mean((dataTest$Burned_Area - pred_QR)^2)
-r2_QR <- 1 - sum((dataTest$Burned_Area - pred_QR)^2) / sum((dataTest$Burned_Area - mean(dataTest$Burned_Area))^2)
-
-# --- 2. Generalized Additive Model (GAM) ---
-modelGAM <- gam(Burned_Area ~ PA_status * lccs + fwi_norm + s(Latitude, bs='cr') + s(Longitude, bs='cr'), 
-                data = dataTrain, method="REML")
-pred_GAM <- predict(modelGAM, dataTest)
-mse_GAM <- mean((dataTest$Burned_Area - pred_GAM)^2)
-r2_GAM <- 1 - sum((dataTest$Burned_Area - pred_GAM)^2) / sum((dataTest$Burned_Area - mean(dataTest$Burned_Area))^2)
-
-# --- 3. Random Forest (RF) ---
-modelRF <- randomForest(Burned_Area ~ PA_status + lccs + fwi_norm + Latitude + Longitude, 
-                        data = dataTrain, ntree = 200, mtry=2, nodesize=5)
-pred_RF <- predict(modelRF, dataTest)
-rmse_RF <- sqrt(mean((dataTest$Burned_Area - pred_RF)^2))
-r2_RF <- 1 - sum((dataTest$Burned_Area - pred_RF)^2) / sum((dataTest$Burned_Area - mean(dataTest$Burned_Area))^2)
-
-# Store results
-performance_results <- rbind(performance_results,
-                             data.frame(Model = "Quantile Regression", MSE = mse_QR, R2 = r2_QR),
-                             data.frame(Model = "GAM", MSE = mse_GAM, R2 = r2_GAM),
-                             data.frame(Model = "Random Forest", MSE = mse_RF, R2 = r2_RF))
-
-# Print performance results
-print(performance_results)
-
-
-
+# Calculate RMSE
 performance_results$RMSE <- sqrt(performance_results$MSE)
 
+# ANOVA comparison
 anova_results <- aov(RMSE ~ Model, data = performance_results)
 summary(anova_results)
 
-
+# Kruskal-Wallis test
 kruskal.test(RMSE ~ Model, data = performance_results)
 
 
-# Compute the mean R² for each model
-mean_r2_results <- performance_results %>%
-  group_by(Model) %>%
-  summarize(mean_R2 = min(RMSE))
 
-# Print the mean R² vamin()# Print the mean R² values
-print(mean_r2_results)
+########### Visualize comparison ###########
 
 # Define custom colors for each variable
 model_cols <- c('Quantile Regression' = 'hotpink4', 
@@ -1027,9 +822,7 @@ model_cols <- c('Quantile Regression' = 'hotpink4',
 # Convert variable column to a factor for proper ordering
 performance_results$Model <- factor(performance_results$Model, levels = names(model_cols))
 
-
-
-## with median value written above line
+# RMSE comparison
 ggplot(performance_results, aes(x = Model, y = RMSE, fill = Model)) +
   geom_boxplot() +
   stat_summary(
@@ -1054,7 +847,7 @@ ggplot(performance_results, aes(x = Model, y = RMSE, fill = Model)) +
 ggsave(filename = paste0(path_fig, "Anova_allPred_boxplot_RMSE.png"), plot = last_plot(),
        width = 8, height = 6, dpi = 300)
 
-
+# R2 comparison
 ggplot(performance_results, aes(x = Model, y = R2, fill = Model)) +
   geom_boxplot() +
   stat_summary(
@@ -1079,18 +872,12 @@ ggsave(filename = paste0(path_fig, "Anova_allPred_boxplot_R2.png"), plot = last_
 
 
 
+########### Comparison QR & GAM (performance) ###########
 
-mean(performance_results$RMSE)
+## use package: performance and function: compare_performance
+# not possible with RF
 
-mean_rmse_per_model <- performance_results %>%
-  group_by(Model) %>%
-  summarise(Mean_RMSE = min(R2, na.rm = TRUE))
-
-print(mean_rmse_per_model)
-
-
-#### PACKAGE compare performance
-performance_list <- list()
+performance_list <- list() # store results in list
 for (fold in 1:10) {
   
   # Subset train-test data
@@ -1139,7 +926,7 @@ print(performance_summary)
 
 
 
-### on dataTrain
+### Try out performance comparison on whole training data
 # QR
 qr0 <- rq(Burned_Area ~ PA_status, data = dataTrain, tau = 0.5)
 qr1 <- rq(Burned_Area ~ PA_status * lccs, data = dataTrain, tau = 0.5)
@@ -1156,12 +943,11 @@ m3 <- gam(Burned_Area ~ PA_status * lccs + fwi_norm + s(Latitude, bs="cr") + s(L
 
 compare_performance(m0, m1, m2, m3)
 
-summary(m3)
-
-## compare all QR and GAM with dataTrain
+# Compare all 
 compare_performance(qr0, qr1, qr2, m0, m1, m2, m3)
 
-### on dataTest
+
+### Try out performance comparison on whole test data
 # QR
 qr0 <- rq(Burned_Area ~ PA_status, data = dataTest, tau = 0.5)
 qr1 <- rq(Burned_Area ~ PA_status * lccs, data = dataTest, tau = 0.5)
@@ -1178,35 +964,29 @@ m3 <- gam(Burned_Area ~ PA_status * lccs + fwi_norm + s(Latitude_norm, bs="cr") 
 
 compare_performance(m0, m1, m2, m3)
 
-summary(m3)
-
 compare_performance(qr0, qr1, qr2, m0, m1, m2, m3)
 
+## best performing model: GAM with all predictors
 
-rf1 <- randomForest(Burned_Area ~ PA_status + lccs + fwi_norm + Latitude_norm + Longitude_norm, 
-                        data = dataTest, ntree = 200, mtry=2, nodesize=5)
 
-compare_performance(qr2, m3, rf1)
 
-############# NORTH SOUTH ###############
+########################## NORTH SOUTH COMPARISON ##############################
 
+# Training: separate into North and South based on clusters
 train_south <- dataTrain %>%
   filter(clusterfold %in% c(2, 4, 5))
 
 train_north <- dataTrain %>%
   filter(!(clusterfold %in% c(2, 4, 5)))
 
-data_combined <- bind_rows(
-  train_south %>% mutate(Region = "South"),
-  train_north %>% mutate(Region = "North")
-)
-
+# median values of North and South BA in PA and non-PA
 median(train_south$Burned_Area[train_south$PA_status == 1])
 median(train_south$Burned_Area[train_south$PA_status == 0])
 
 median(train_north$Burned_Area[train_north$PA_status == 1])
 median(train_north$Burned_Area[train_north$PA_status == 0])
 
+## Visualize BA distribution
 # Create the boxplot
 ggplot(data_combined, aes(x = Region, y = Burned_Area, fill = PA_status)) +
   geom_boxplot(width = 0.4) +  # Narrower boxes
@@ -1231,20 +1011,6 @@ ggplot(data_combined, aes(x = Region, y = Burned_Area, fill = PA_status)) +
 ggsave(filename = paste0(path_fig, "Boxplot_BA_PA_NorthSouth.png"), plot = last_plot(),
        width = 8, height = 4, dpi = 300)
 
-# different version
-ggplot(data_combined, aes(x = as.factor(PA_status), y = Burned_Area, fill = Region)) +
-  geom_boxplot(width = 0.3) +  # Narrower boxes
-  scale_fill_manual(
-    values = c("South" = "plum", "North" = "steelblue"),
-    name = "Region",
-    labels = c("North", "South")) +
-  scale_x_discrete(labels = c("0" = "Non-Protected", "1" = "Protected")) +  # Label x-axis for PA_status
-  labs(x = "Protection Status", y = "Burned Area [%]") +
-  theme_minimal() +
-  # Add median line in orange and text next to it
-  stat_summary(fun = median, geom = "text", aes(label = round(..y.., 1), group = PA_status),
-               color = "maroon4", size = 5, fontface = "bold", vjust = -0.5, hjust = 0.5) +  # Position text near median
-  theme(axis.text.x = element_text(size = 14, hjust = 1))
 
 
 model_south <- gam(Burned_Area ~ PA_status * lccs + fwi_norm + s(Latitude_norm, bs="cr") + s(Longitude_norm, bs="cr"), data = train_south, method="REML")
@@ -1255,7 +1021,7 @@ model_north <- gam(Burned_Area ~ PA_status * lccs + fwi_norm + s(Latitude_norm, 
 summary(model_north)
 
 
-### Predict
+### Model prediction
 test_south <- dataTest %>%
   filter(clusterfold %in% c(2, 4, 5))
 
@@ -1271,12 +1037,9 @@ rmse_north <- sqrt(mean((test_north$Burned_Area - predictNorth)^2))
 r2_north <- 1 - sum((test_north$Burned_Area - predictNorth)^2) / sum((test_north$Burned_Area - mean(test_north$Burned_Area))^2)
 
 
-########################## PA LAG BA #############################
+############################### LAG FIRE & PA ##################################
 
-dataPA <- dataTrain %>%
-  filter(PA_status == 1) %>%
-  mutate(Lag =  Year - PA_year)
-
+## subset of dataTrain
 dataPA <- dataTrain %>%
   filter(PA_status == 1) %>%  # Filter for PA_status == 1
   mutate(Lag = Year - PA_year) %>%  # Compute Lag
@@ -1287,46 +1050,32 @@ dataPA <- dataTrain %>%
 summary(dataPA$Lag)
 quantile(dataPA$Lag, probs = seq(0, 1, 0.25))
 
-# dataPA <- dataPA %>%
-  # mutate(Lag_bin = cut(Lag, 
-    #                    breaks = c(-Inf, 5, 13, 31, Inf), 
-      #                  labels = c("0-5", "6-13", "14-31", ">31")))
-
+# create bins for lag years, based on quantiles
 dataPA <- dataPA %>%
   mutate(Lag_bin = cut(Lag, 
                        breaks = c(-Inf, 3, 11, 29, Inf), 
                        labels = c("0-3", "4-11", "12-29", ">29")))
 
-# breaks = c(-Inf, 4, 12, 30, Inf), 
-# labels = c("0-4", "5-12", "13-30", ">30")))
 
-# Check the distribution of 'Lag_binned'
+# Check the distribution of 'Lag_bin'
 table(dataPA$Lag_bin)
 
-### LAG AND SPATIAL
+########### Model: Lag bin only ###########
 mLag <- gam(Burned_Area ~ Lag_bin + s(Latitude_norm, bs="cr") + s(Longitude_norm, bs="cr"), 
             data = dataPA, method="REML")
 
-# Median outcome:
-# mLag <- gam(Burned_Area ~ Lag_bin, data = dataPA)
-
 summary(mLag)
 
-### ALL PREDICTORS
-mLag <- gam(Burned_Area ~ Lag_bin * lccs + fwi_norm + s(Latitude, bs="cr") + s(Longitude, bs="cr"), 
+########### Model: all predictors ###########
+mLag_all <- gam(Burned_Area ~ Lag_bin * lccs + fwi_norm + s(Latitude, bs="cr") + s(Longitude, bs="cr"), 
             data = dataPA, method="REML")
 
-summary(mLag)
+summary(mLag_all)
 
 
-aggregate(Burned_Area ~ Lag_bin, data = dataPA, FUN = median)
-table(dataPA$Lag_bin)
+########### Visualize Lag and BA ###########
 
-
-
-
-############### PLOTS
-
+# histogram of BA count and lag as histogram, binwidth 5
 ggplot(dataPA, aes(x = Lag)) +
   geom_histogram(binwidth = 5, color = "black", fill="cadetblue4") +
   labs(x = "Lag [Years]", y = "Count") +
@@ -1345,8 +1094,10 @@ ggsave(filename = paste0(path_fig, "Histogram_PA_Lag.png"), plot = last_plot(),
        width = 6, height = 4, dpi = 300)
 
 
+# Boxplot of BA distribution in lag bins
+# define colors for lag bins
 lag_cols <- c("darkcyan", "hotpink2", "darkgoldenrod2", "yellowgreen")
-
+# boxplot with median value
 ggplot(dataPA, aes(x = Lag_bin, y = Burned_Area)) +
   geom_boxplot(width = 0.3, fill=lag_cols) +  # Narrower boxes
   labs(x = "Lag (years)", y = "Burned Area [%]") +
@@ -1366,7 +1117,8 @@ ggsave(filename = paste0(path_fig, "Boxplot_BA_PA_LagBin.png"), plot = last_plot
        width = 6, height = 4, dpi = 300)
 
 
-
+# Map of PA and BA lag bins
+# BA samples in PAs colored according to lag bin value
 dataPA_sf <- st_as_sf(dataPA, coords = c("Longitude", "Latitude"), crs=4326)
 ggplot() +
   geom_sf(data = pt_sf, fill = NA, color = "black", size = 0.8) +
@@ -1374,7 +1126,6 @@ ggplot() +
   geom_sf(data = dataPA_sf, aes(color = as.factor(Lag_bin)), size = 1) +
   
   # Add map elements
-  #annotation_scale(location = "br") +
   annotation_north_arrow(location = "br", which_north = "true", style = north_arrow_fancy_orienteering) +
   
   scale_color_manual(values = lag_cols, name = "Lag Group") +
@@ -1395,31 +1146,9 @@ ggsave(filename = paste0(path_fig, "Map_PT_Lag.png"), plot = last_plot(),
        width = 5, height = 8, dpi = 300)
 
 
-########### GINI #############
-
-data_gini <- dataTrain %>%
-  filter(Gini > 0.75)
-
-data_gini <- data_gini %>%
-  group_by(PA_lccs) %>% 
-  slice_sample(n = min(table(data_gini$PA_lccs))) %>%  # Ensures equal samples per PA_lccs
-  ungroup()
-
-table(data_gini$lccs)
-
-mGini <- gam(Burned_Area ~ PA_status * lccs + fwi_norm + s(Latitude_norm, bs="cr") + s(Longitude_norm, bs="cr"), 
-             data = data_gini, method="REML")
-
-summary(mGini)
 
 
-########### OTHER STATS ##############
-
-# Create a summary of Burned_Area by Region
-region_summary <- dataPA %>%
-  group_by(cluster) %>%
-  summarise(median_BA = median(Burned_Area), mean_BA = mean(Burned_Area), .groups = 'drop')
-
+############################## OTHER STATS #####################################
 
 ### BA across Clusters
 ggplot(data, aes(x = factor(cluster), y = Burned_Area)) + 
@@ -1436,20 +1165,20 @@ ggsave(filename = paste0(path_fig, "Boxplot_BA_per_Cluster.png"), plot = last_pl
        width = 8, height = 6, dpi = 300)
 
 
-### BA across Clusters
+### BA per Month
 ggplot(data, aes(x = factor(Month), y = Burned_Area)) + 
   geom_boxplot(fill = "lightblue", color = "black") +  # Customize the boxplot color
   labs(x = "Month", y = "Burned Area [%]") + 
   theme_minimal() + 
-  stat_summary(fun = median, geom = "text", aes(label = round(..y.., 1)), color = "lightblue1", size = 4, vjust = -0.5) +
+  stat_summary(fun = median, geom = "text", aes(label = round(..y.., 1)), color = "black", size = 4, vjust = -0.5) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
-ggsave(filename = paste0(path_fig, "Boxplot_BA_per_Cluster.png"), plot = last_plot(),
+ggsave(filename = paste0(path_fig, "Boxplot_BA_per_Month.png"), plot = last_plot(),
        width = 8, height = 6, dpi = 300)
 
 
-
-lc_cols <- c("orange", "maroon", "darkcyan")
-ggplot(data_gini, aes(x = as.factor(lccs), y = Burned_Area, fill = as.factor(lccs), alpha = as.factor(PA_status))) +
+### BA per LCC and PA status
+forest_colors <- c("yellowgreen", "darkolivegreen4", "darkgreen")
+ggplot(data, aes(x = as.factor(lccs), y = Burned_Area, fill = as.factor(lccs), alpha = as.factor(PA_status))) +
   geom_boxplot(position = position_dodge(width = 0.75)) +  # Dodge for separation
   scale_fill_manual(values = forest_colors) + 
   scale_alpha_manual(values = c("0" = 0.6, "1" = 1)) +  # Set transparency for PA_status
@@ -1476,54 +1205,4 @@ ggsave(filename = paste0(path_fig, "Boxplot_BA_per_LCC.png"), plot = last_plot()
 
 
 
-### BA map 
-ggplot() +
-  # Plot the spatial polygons with black borders
-  geom_sf(data = pt_sf, fill = NA, color = "black", size = 0.8) +
-  
-  # Plot individual points with color mapped to Burned_Area
-  geom_sf(data = data_sf, aes(color = Burned_Area), size = 0.8) +
-  
-  # Apply a continuous color scale to Burned_Area
-  scale_color_gradient(low = "gold", high = "darkred", name = "BA [%]") +
-  
-  # Add a north arrow to the map
-  annotation_north_arrow(location = "br", which_north = "true", style = north_arrow_fancy_orienteering) +
-  
-  # Add labels for the axes
-  labs(x = "Longitude", y = "Latitude") +
-  
-  # Apply minimal theme
-  theme_minimal()
 
-
-### Fire frequency
-library(viridis)
-grid_size <- 0.05  # Adjust resolution (smaller = finer grid)
-bbox <- st_bbox(data_sf)
-
-# Create grid over bounding box
-grid <- st_make_grid(st_as_sfc(bbox), cellsize = grid_size, what = "polygons")
-grid_sf <- st_sf(geometry = grid)
-
-# Count fire occurrences per grid cell
-fire_counts <- st_join(grid_sf, data_sf) %>%
-  group_by(geometry) %>%
-  summarise(Fire_Count = n(), .groups = "drop")  # Count occurrences
-
-# Set missing fire count values to 0
-fire_counts$Fire_Count[is.na(fire_counts$Fire_Count)] <- 0
-
-# Plot the fire frequency map
-ggplot() +
-  # Add fire frequency grid
-  geom_sf(data = fire_counts, aes(fill = Fire_Count), color = NA) +
-  # Set color scale: 0 is white, higher values use "inferno" colors
-  # scale_fill_gradientn(colors = c("white", viridis(5, option = "magma")), name = "Fire Frequency") +
-  scale_fill_gradientn(colors = c("white", "lightgreen", "orange", "red", "darkred"), name = "Fire Frequency") +
-  # Add Portugal shape outline
-  geom_sf(data = pt_sf, fill = NA, color = "black", size = 0.8) +
-  labs(title = "Fire Frequency Map of Portugal", x = "Longitude", y = "Latitude") +
-  theme_minimal()
-
-hist(log(fire_counts$Fire_Count))
