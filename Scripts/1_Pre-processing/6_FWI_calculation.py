@@ -12,8 +12,8 @@ from fwi_functions import calculate_ffmc, calculate_dmc, calculate_dc, calculate
 year = sys.argv[1]
 
 # Set path
-path_data = '/work/lh88wasu-BA_Portugal/Data/FWI/Preprocessed/'
-outpath_data = '/work/lh88wasu-BA_Portugal/Data/FWI/FWI/'
+path_data = 'path-to-data'
+outpath_data = 'outpath'
 
 # lLad data
 data = xr.open_dataset(path_data + f'ERA5_Land_allvars_{year}.nc')
