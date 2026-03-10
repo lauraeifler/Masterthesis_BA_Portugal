@@ -13,7 +13,7 @@ year = int(sys.argv[1])
 # Set path
 path_precip = 'path-to-precipitation-data'
 path_clim = 'path-to-other-ERA5-data' #all others in one nc file per year
-outpath_data = '/work/lh88wasu-BA_Portugal/Data/FWI/Preprocessed/'
+outpath_data = 'output-path'
 
 # Load data of other variables (noon values)
 data = xr.open_dataset(path_clim + f'ERA5_Land_climvars_{year}.nc')
